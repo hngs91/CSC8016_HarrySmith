@@ -3,9 +3,7 @@ package uk.ncl.CSC8016.harrysmith;
 import uk.ncl.CSC8016.harrysmith.utils.AtomicBigInteger;
 
 import java.math.BigInteger;
-import java.util.HashMap;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -24,7 +22,7 @@ public class Bank extends BankFacade {
         customerSem = new HashMap<>();
 
         Set<String> keys = customers.keySet();
-        for(int i =0; i<keys.size(); i++){
+        for (int i = 0; i < keys.size(); i++) {
             customerSem.put(keys.toArray()[i].toString(), new Semaphore(1));
         }
 
@@ -50,12 +48,14 @@ public class Bank extends BankFacade {
             return Optional.of(new TransactionCommands() {
                 boolean isProcessDone, isProcessAborted, isProcessCommitted;
                 double totalLocalOperations;
+                List<Operation> journal;
                 BigInteger currentTransactionId;
 
                 {
                     totalLocalOperations = 0;
                     isProcessDone = isProcessAborted = isProcessCommitted = false;
                     currentTransactionId = abi.incrementAndGet();
+                    journal = new ArrayList<>();
                 }
 
                 @Override
@@ -65,19 +65,20 @@ public class Bank extends BankFacade {
 
                 @Override
                 public double getTentativeTotalAmount() {
-                    return customers.get(userId);
+                    if (isProcessDone)
+                        return customers.get(userId);
+                    else
+                        return -1;
                 }
 
                 @Override
                 public boolean withdrawMoney(double amount) {
-                    if ((amount < 0) || (isProcessDone)) {
-                        customerSem.get(userId).release();
-                        return false;
-                    } else {
+                    if ((amount < 0) || (isProcessDone)) return false;
+                    else {
                         double val = customers.get(userId);
                         if (val >= amount) {
+                            journal.add(Operation.Withdraw(amount, journal.size()));
                             totalLocalOperations -= amount;
-                            customers.put(userId, val - amount);
                             return true;
                         } else
                             return false;
@@ -86,12 +87,10 @@ public class Bank extends BankFacade {
 
                 @Override
                 public boolean payMoneyToAccount(double amount) {
-                    if ((amount < 0) || (isProcessDone)) {
-                        return false;
-                    } else {
-                        double val = customers.get(userId);
+                    if ((amount < 0) || (isProcessDone)) return false;
+                    else {
+                        journal.add(Operation.Pay(amount, journal.size()));
                         totalLocalOperations += amount;
-                        customers.put(userId, val + amount);
                         return true;
                     }
                 }
@@ -111,14 +110,13 @@ public class Bank extends BankFacade {
                     if (!isProcessDone) {
                         isProcessAborted = false;
                         isProcessDone = isProcessCommitted = true;
+                        customers.computeIfPresent(userId, (s, aDouble) -> aDouble += totalLocalOperations);
+                        customerSem.get(userId).release();
+                        return new CommitResult(journal, new ArrayList<>(), customers.get(userId));
+                    } else {
+                        customerSem.get(userId).release();
+                        return null;
                     }
-                    return null;
-                }
-
-                @Override
-                public void close() {
-                    commit();
-                    customerSem.get(userId).release();
                 }
             });
         } else
